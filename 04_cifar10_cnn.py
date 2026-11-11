@@ -23,7 +23,7 @@ def get_device() -> str:
     return device
 
 
-def get_model(variant: str, device: str):
+def get_model(image_dim: int, image_channels: int, variant: str, device: str):
     should_conv_relu = True
     should_pool = True
     should_stride = False
@@ -51,17 +51,17 @@ def get_model(variant: str, device: str):
         args = chain.from_iterable([[conv], relu, pool])
         return nn.Sequential(*args)
 
-    # (1,28,28) -> (32, 14, 14)
-    l1 = conv_layer(1, 32)
+    # (image_channels,id,id) -> (32, id/2, id/2)
+    l1 = conv_layer(image_channels, 32)
 
-    # (32, 14, 14) -> (64, 7, 7)
+    # (32, id/2, id/2) -> (64, id/4, id/4)
     l2 = conv_layer(32, 64)
 
-    # (64,7,7) -> (10)
+    # (64,id/4,id/4) -> (10)
     if should_pool or should_stride:
-        d = 7
+        d = image_dim // 4
     else:
-        d = 28
+        d = image_dim
     if linear_head:
         l3 = nn.Sequential(nn.Flatten(), nn.Linear(64 * d * d, 10))
     else:
@@ -92,23 +92,35 @@ def main():
     args = p.parse_args()
 
     device = get_device()
-    tf = (
+
+    train_tf = transforms.Compose(
+        [
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+        ]
+    )
+    test_tf = (
         transforms.ToTensor()
-    )  # turns a 28x28 image into a float tensor in [0,1], shape (1,28,28)
+    )  # turns a NxN image into a float tensor in [0,1], shape (channels,N,N)
 
-    train_ds = datasets.MNIST("data", train=True, download=True, transform=tf)
-    test_ds = datasets.MNIST("data", train=False, download=True, transform=tf)
-    train_dl = DataLoader(train_ds, batch_size=128, shuffle=True)
-    test_dl = DataLoader(test_ds, batch_size=128, shuffle=False)
+    train_ds = datasets.CIFAR10("data", train=True, download=True, transform=train_tf)
+    test_ds = datasets.CIFAR10("data", train=False, download=True, transform=test_tf)
+    train_dl = DataLoader(
+        train_ds, batch_size=128, shuffle=True, num_workers=8, pin_memory=True
+    )
+    test_dl = DataLoader(
+        test_ds, batch_size=128, shuffle=False, num_workers=8, pin_memory=True
+    )
 
-    model = get_model(args.variant, device)
+    model = get_model(32, 3, args.variant, device)
     loss_fn = nn.CrossEntropyLoss()
 
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     batch_num = 0
     running_loss = 0
-    for epoch in range(5):
+    for epoch in range(25):
         for xb, yb in train_dl:
             xb, yb = xb.to(device), yb.to(device)
             logits = model(xb)
@@ -124,7 +136,7 @@ def main():
             running_loss += loss.item()
 
             if batch_num % 200 == 0:
-                print(f"{batch_num} {running_loss / 200:.2}")
+                print(f"{batch_num} {running_loss / 200:.4}")
                 running_loss = 0
 
         print(f"epoch {epoch + 1} finish")
@@ -140,7 +152,7 @@ def main():
                 test_loss += loss_fn(logits, yb).item() * len(yb)
 
             test_acc = test_profit.item() / len(test_ds)
-            print(f"test acc {test_acc:.2%}, test loss {test_loss / len(test_ds):.2}")
+            print(f"test acc {test_acc:.2%}, test loss {test_loss / len(test_ds):.4}")
 
         model.train()
 
@@ -157,13 +169,17 @@ def main():
             for idx in wrong_idx:
                 mistakes.append((xb[idx].cpu(), pred[idx].item(), yb[idx].item()))
 
-    fig, axes = plt.subplots(3, 5, figsize=(10, 4))
+    fig, axes = plt.subplots(3, 5, figsize=(10, 7))
     for ax, mistake in zip(axes.flat, mistakes):
         img, p, t = mistake
-        ax.imshow(img[0].cpu(), cmap="gray")
-        ax.set_title(f"pred {p}, true {t}")
+        img = img.permute(1, 2, 0)
+        ax.imshow(img)
+        ax.set_title(
+            f"pred {test_ds.classes[p]}, true {test_ds.classes[t]}", fontsize=8
+        )
         ax.axis("off")
 
+    fig.tight_layout()
     fig.savefig("mistakes.png")
 
 
