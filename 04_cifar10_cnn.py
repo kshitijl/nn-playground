@@ -24,31 +24,12 @@ def get_device() -> str:
 
 
 def get_model(image_dim: int, image_channels: int, variant: str, device: str):
-    should_conv_relu = True
-    should_pool = True
-    should_stride = False
-    linear_head = False
-
-    if variant == "no_conv_relu":
-        should_conv_relu = False
-    if variant == "no_pooling":
-        should_pool = False
-    if variant == "stride_instead_of_pool":
-        should_stride = True
-        should_pool = False
-    if variant == "linear_head":
-        linear_head = True
-
     def conv_layer(in_channels: int, out_channels: int):
-        if should_stride:
-            assert not should_pool
-            conv = nn.Conv2d(in_channels, out_channels, 3, padding=1, stride=2)
-        else:
-            conv = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        conv = nn.Conv2d(in_channels, out_channels, 3, padding=1)
 
-        relu = [nn.ReLU()] if should_conv_relu else []
-        pool = [nn.MaxPool2d(2)] if should_pool else []
-        args = chain.from_iterable([[conv], relu, pool])
+        relu = [nn.ReLU()]
+        pool = [nn.MaxPool2d(2)]
+        args = chain.from_iterable([[conv], [nn.BatchNorm2d(out_channels)], relu, pool])
         return nn.Sequential(*args)
 
     # (image_channels,id,id) -> (32, id/2, id/2)
@@ -58,16 +39,10 @@ def get_model(image_dim: int, image_channels: int, variant: str, device: str):
     l2 = conv_layer(32, 64)
 
     # (64,id/4,id/4) -> (10)
-    if should_pool or should_stride:
-        d = image_dim // 4
-    else:
-        d = image_dim
-    if linear_head:
-        l3 = nn.Sequential(nn.Flatten(), nn.Linear(64 * d * d, 10))
-    else:
-        l3 = nn.Sequential(
-            nn.Flatten(), nn.Linear(64 * d * d, 128), nn.ReLU(), nn.Linear(128, 10)
-        )
+    d = image_dim // 4
+    l3 = nn.Sequential(
+        nn.Flatten(), nn.Linear(64 * d * d, 128), nn.ReLU(), nn.Linear(128, 10)
+    )
 
     model = nn.Sequential(l1, l2, l3).to(device)
 
@@ -116,11 +91,15 @@ def main():
     model = get_model(32, 3, args.variant, device)
     loss_fn = nn.CrossEntropyLoss()
 
+    epochs = 30
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    sched = torch.optim.lr_scheduler.OneCycleLR(
+        opt, max_lr=1e-3, epochs=epochs, steps_per_epoch=len(train_dl)
+    )
 
     batch_num = 0
     running_loss = 0
-    for epoch in range(25):
+    for epoch in range(epochs):
         for xb, yb in train_dl:
             xb, yb = xb.to(device), yb.to(device)
             logits = model(xb)
@@ -131,6 +110,7 @@ def main():
             loss.backward()
 
             opt.step()
+            sched.step()
             batch_num += 1
 
             running_loss += loss.item()
