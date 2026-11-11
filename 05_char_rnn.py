@@ -60,6 +60,8 @@ class MyModel(nn.Module):
 
 
 def main():
+    torch.manual_seed(0)
+
     embed_dim = 128
     hidden_dim = 256
     num_steps = 5000
@@ -105,7 +107,7 @@ def main():
 
     model = MyModel(vocab_size, embed_dim, hidden_dim).to(device)
 
-    logits = model(x.to(device))
+    logits = model(x)
     print(logits.shape)
     num_parameters = sum(p.numel() for p in model.parameters())
     print(f"The model has {num_parameters:,} parameters")
@@ -133,8 +135,7 @@ def main():
 
         return total_loss / num_batches
 
-    def generate(n: int):
-        temperature = 0.2
+    def generate(n: int, temperature: float):
         model.eval()
         ids = torch.tensor(encode("\n")).reshape(1, 1).to(device)
 
@@ -163,7 +164,7 @@ def main():
         ids = ids.reshape(-1)
         return decode(ids.tolist())
 
-    print(f"Initial generation is {generate(100)}")
+    print(f"Initial generation is {generate(100, 1.0)}")
 
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 
@@ -180,12 +181,14 @@ def main():
 
         opt.step()
 
-        if step % 250 == 0:
+        if step % 250 == 0 or step == num_steps - 1:
             train_loss = estimate_loss(train)
             val_loss = estimate_loss(val)
             print(f"Step {step}, train loss {train_loss:.4}, val loss {val_loss:.4}")
-            print(f"Sample text:{generate(100)}")
+            print(f"Sample text:{generate(100, 1.0)}")
             print("")
+
+    torch.save(model.state_dict(), "char_lstm.pt")
 
 
 if __name__ == "__main__":
