@@ -25,26 +25,24 @@ def get_device() -> str:
 
 def get_model(image_dim: int, image_channels: int, variant: str, device: str):
     def conv_layer(in_channels: int, out_channels: int):
-        conv = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+        )
 
-        relu = [nn.ReLU()]
-        pool = [nn.MaxPool2d(2)]
-        args = chain.from_iterable([[conv], [nn.BatchNorm2d(out_channels)], relu, pool])
-        return nn.Sequential(*args)
+    l1 = conv_layer(image_channels, 64)
+    l2 = conv_layer(64, 128)
+    l3 = conv_layer(128, 256)
 
-    # (image_channels,id,id) -> (32, id/2, id/2)
-    l1 = conv_layer(image_channels, 32)
+    d = image_dim // 8
+    l4 = nn.Sequential(nn.Flatten(), nn.Linear(256 * d * d, 10))
 
-    # (32, id/2, id/2) -> (64, id/4, id/4)
-    l2 = conv_layer(32, 64)
-
-    # (64,id/4,id/4) -> (10)
-    d = image_dim // 4
-    l3 = nn.Sequential(
-        nn.Flatten(), nn.Linear(64 * d * d, 128), nn.ReLU(), nn.Linear(128, 10)
-    )
-
-    model = nn.Sequential(l1, l2, l3).to(device)
+    model = nn.Sequential(l1, l2, l3, l4).to(device)
 
     num_parameters = sum(p.numel() for p in model.parameters())
     print(f"num parameters: {num_parameters:,}")
@@ -89,10 +87,10 @@ def main():
     )
 
     model = get_model(32, 3, args.variant, device)
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     epochs = 30
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=5e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=1e-3, epochs=epochs, steps_per_epoch=len(train_dl)
     )
