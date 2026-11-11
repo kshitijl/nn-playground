@@ -3,6 +3,18 @@ from torch import nn
 import math
 
 
+def get_device() -> str:
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
+    print(f"Device: {device}")
+    return device
+
+
 def get_data() -> str:
     with open("data/input.txt", "r") as f:
         contents = f.read()
@@ -50,6 +62,11 @@ class MyModel(nn.Module):
 def main():
     embed_dim = 128
     hidden_dim = 256
+    num_steps = 5000
+    B, T = 64, 128
+
+    device = get_device()
+
     contents = get_data()
 
     chars = sorted(set(contents))
@@ -79,24 +96,96 @@ def main():
     print("-" * 80)
 
     print("Building batches")
-    B, T = 64, 128
 
     x, y = get_batch(train, B, T)
+    x, y = x.to(device), y.to(device)
     print(decode(x[0].tolist()))
     print(decode(y[0].tolist()))
     print("Done building batches")
 
-    model = MyModel(vocab_size, embed_dim, hidden_dim)
+    model = MyModel(vocab_size, embed_dim, hidden_dim).to(device)
 
-    logits = model(x)
+    logits = model(x.to(device))
     print(logits.shape)
-    num_parameters = sum(x.numel() for x in model.parameters())
+    num_parameters = sum(p.numel() for p in model.parameters())
     print(f"The model has {num_parameters:,} parameters")
 
     loss_fn = nn.CrossEntropyLoss()
     initial_loss = loss_fn(logits.view(-1, vocab_size), y.view(-1)).item()
     expected_initial_loss = math.log(vocab_size)
     print(f"Initial loss is {initial_loss:.4}, expected {expected_initial_loss:.4}")
+
+    def estimate_loss(data):
+        num_batches = 20
+        model.eval()
+
+        with torch.no_grad():
+            total_loss = 0
+
+            for idx in range(num_batches):
+                x, y = get_batch(data, B, T)
+                x, y = x.to(device), y.to(device)
+                logits = model(x)
+                loss = loss_fn(logits.view(-1, vocab_size), y.view(-1))
+                total_loss += loss.item()
+
+        model.train()
+
+        return total_loss / num_batches
+
+    def generate(n: int):
+        temperature = 0.2
+        model.eval()
+        ids = torch.tensor(encode("\n")).reshape(1, 1).to(device)
+
+        assert ids.shape == (1, 1)
+
+        with torch.no_grad():
+            for idx in range(n):
+                assert ids.shape == (1, idx + 1)
+
+                logits = model(ids)
+                assert logits.shape == (1, idx + 1, vocab_size)
+
+                last_token_logits = logits[:, -1, :]
+                assert last_token_logits.shape == (1, vocab_size)
+
+                probs = torch.softmax(last_token_logits / temperature, dim=-1)
+                assert probs.shape == (1, vocab_size)
+
+                token = torch.multinomial(probs, 1)
+                assert token.shape == (1, 1)
+
+                ids = torch.cat([ids, token], dim=1)
+                assert ids.shape == (1, idx + 2)
+
+        model.train()
+        ids = ids.reshape(-1)
+        return decode(ids.tolist())
+
+    print(f"Initial generation is {generate(100)}")
+
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    for step in range(num_steps):
+        x, y = get_batch(train, B, T)
+        x, y = x.to(device), y.to(device)
+
+        logits = model(x)
+        loss = loss_fn(logits.view(-1, vocab_size), y.view(-1))
+
+        opt.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        opt.step()
+
+        if step % 250 == 0:
+            train_loss = estimate_loss(train)
+            val_loss = estimate_loss(val)
+            print(f"Step {step}, train loss {train_loss:.4}, val loss {val_loss:.4}")
+            print(f"Sample text:{generate(100)}")
+            print("")
 
 
 if __name__ == "__main__":
