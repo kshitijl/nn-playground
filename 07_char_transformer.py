@@ -69,25 +69,38 @@ class MLP(nn.Module):
 
 
 class Head(nn.Module):
-    def __init__(self, C: int):
+    def __init__(self, C: int, head_size: int):
         super().__init__()
-        self.query = nn.Linear(C, C)
-        self.key = nn.Linear(C, C)
-        self.value = nn.Linear(C, C)
+        self.query = nn.Linear(C, head_size)
+        self.key = nn.Linear(C, head_size)
+        self.value = nn.Linear(C, head_size)
 
     def forward(self, x):  # (B,T)
-        q = self.query(x)  # (B, C)
-        k = self.key(x)  # (B, C)
-        v = self.value(x)  # (B, C)
+        q = self.query(x)  # (B, head_size)
+        k = self.key(x)  # (B, head_size)
+        v = self.value(x)  # (B, head_size)
 
         return attention(q, k, v)[0]
+
+
+class MultiHead(nn.Module):
+    def __init__(self, C: int, n_head: int):
+        super().__init__()
+        head_size = C // n_head
+        self.heads = nn.ModuleList([Head(C, head_size) for _ in range(n_head)])
+        self.proj = nn.Linear(C, C)
+
+    def forward(self, x):  # (B, T, C)
+        # 4 x (B, T, 16) -> (B, T, 64)
+        out = torch.cat([head(x) for head in self.heads], dim=-1)
+        return self.proj(out)
 
 
 class Block(nn.Module):
     def __init__(self, C: int):
         super().__init__()
         self.ln1 = nn.LayerNorm(C)
-        self.attn = Head(C)
+        self.attn = MultiHead(C, n_head=4)
         self.ln2 = nn.LayerNorm(C)
         self.mlp = MLP(C)
 
@@ -190,8 +203,8 @@ def main():
     x2[:, 60] = (x2[:, 60] + 1) % 65  # change one character
     with torch.no_grad():
         a, b = model(x), model(x2)
-    print(torch.equal(a[:, :60], b[:, :60]))  # should be True: past ignores future
-    print(torch.equal(a[:, 60:], b[:, 60:]))  # should be False
+    assert torch.equal(a[:, :60], b[:, :60])  # should be True: past ignores future
+    assert not torch.equal(a[:, 60:], b[:, 60:])  # should be False
 
     model.train()
     print("\n\n")
