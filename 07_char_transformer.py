@@ -3,6 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 import math
 
+dropout_p = 0.2
+
 
 def get_device() -> str:
     if torch.cuda.is_available():
@@ -46,13 +48,15 @@ def get_batch(data: torch.Tensor, B: int, T: int) -> tuple[torch.Tensor, torch.T
     return (x, y)
 
 
-def attention(q, k, v):
+def attention(q, k, v, dropout):
     T, d = q.shape[-2], q.shape[-1]
     scores = q @ k.transpose(-2, -1) / math.sqrt(d)
 
     future = torch.ones((T, T), dtype=torch.bool, device=q.device).triu(diagonal=1)
     scores = scores.masked_fill(future, float("-inf"))
     weights = torch.softmax(scores, dim=-1)
+
+    weights = dropout(weights)
 
     answer = weights @ v
     return answer, weights
@@ -74,18 +78,20 @@ class Head(nn.Module):
         self.query = nn.Linear(C, head_size)
         self.key = nn.Linear(C, head_size)
         self.value = nn.Linear(C, head_size)
+        self.dropout = nn.Dropout(dropout_p)
 
     def forward(self, x):  # (B,T)
         q = self.query(x)  # (B, head_size)
         k = self.key(x)  # (B, head_size)
         v = self.value(x)  # (B, head_size)
 
-        return attention(q, k, v)[0]
+        return attention(q, k, v, self.dropout)[0]
 
 
 class MultiHead(nn.Module):
     def __init__(self, C: int, num_heads: int):
         super().__init__()
+        assert C % num_heads == 0
         head_size = C // num_heads
         self.heads = nn.ModuleList([Head(C, head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(C, C)
@@ -103,10 +109,11 @@ class Block(nn.Module):
         self.attn = MultiHead(C, num_heads=num_heads)
         self.ln2 = nn.LayerNorm(C)
         self.mlp = MLP(C)
+        self.dropout = nn.Dropout(dropout_p)
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        x = x + self.dropout(self.attn(self.ln1(x)))
+        x = x + self.dropout(self.mlp(self.ln2(x)))
         return x
 
 
@@ -118,16 +125,17 @@ class Transformer(nn.Module):
         self.pos_emb = nn.Embedding(block_size, C)
         self.blocks = nn.Sequential(*[Block(C, num_heads) for _ in range(n_layers)])
         self.ln_f = nn.LayerNorm(C)
-        self.head = nn.Linear(C, V)
+        self.lm_head = nn.Linear(C, V)
+        self.dropout = nn.Dropout(dropout_p)
 
     def forward(self, x):  # (B, T)
         T = x.shape[1]
         pos = torch.arange(T, device=x.device)
         h = self.tok_emb(x) + self.pos_emb(pos)  # (B, T, C) + (T, C)
-
+        h = self.dropout(h)
         h = self.blocks(h)
         h = self.ln_f(h)
-        return self.head(h)  # (B, T, V)
+        return self.lm_head(h)  # (B, T, V)
 
 
 def main():
