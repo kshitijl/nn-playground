@@ -45,23 +45,54 @@ def get_batch(data: torch.Tensor, B: int, T: int) -> tuple[torch.Tensor, torch.T
     return (x, y)
 
 
+def attention(q, k, v):
+    T, d = q.shape[-2], q.shape[-1]
+    scores = q @ k.transpose(-2, -1) / math.sqrt(d)
+
+    future = torch.ones((T, T), dtype=torch.bool, device=q.device).triu(diagonal=1)
+    scores = scores.masked_fill(future, float("-inf"))
+    weights = torch.softmax(scores, dim=-1)
+
+    answer = weights @ v
+    return answer, weights
+
+
+class Head(nn.Module):
+    def __init__(self, C: int):
+        super().__init__()
+        self.query = nn.Linear(C, C)
+        self.key = nn.Linear(C, C)
+        self.value = nn.Linear(C, C)
+
+    def forward(self, x):  # (B,T)
+        q = self.query(x)  # (B, C)
+        k = self.key(x)  # (B, C)
+        v = self.value(x)  # (B, C)
+
+        return attention(q, k, v)[0]
+
+
 class Bigram(nn.Module):
     # V: vocab size, C: embedding dim
-    def __init__(self, V: int, C: int):
+    def __init__(self, V: int, C: int, block_size: int):
         super().__init__()
         self.tok_emb = nn.Embedding(V, C)
+        self.pos_emb = nn.Embedding(block_size, C)
+        self.attn = Head(C)
         self.head = nn.Linear(C, V)
 
     def forward(self, x):  # (B, T)
-        h = self.tok_emb(x)  # (B, T, C)
+        T = x.shape[1]
+        pos = torch.arange(T, device=x.device)
+        h = self.tok_emb(x) + self.pos_emb(pos)  # (B, T, C) + (T, C)
+        h = self.attn(h)  # (B, T, C)
         return self.head(h)  # (B, T, V)
 
 
 def main():
     torch.manual_seed(0)
-
-    embed_dim = 128
-    hidden_dim = 256
+    block_size = 128
+    embed_dim = 64
     num_steps = 5000
     B, T = 64, 128
 
@@ -103,18 +134,38 @@ def main():
     print(decode(y[0].tolist()))
     print("Done building batches")
 
+    print("\n\n\n")
+
     # model = MyModel(vocab_size, embed_dim, hidden_dim).to(device)
-    model = Bigram(vocab_size, 64).to(device)
+    model = Bigram(vocab_size, embed_dim, block_size).to(device)
 
     logits = model(x)
     print(logits.shape)
     num_parameters = sum(p.numel() for p in model.parameters())
     print(f"The model has {num_parameters:,} parameters")
 
+    print("\n\n\n")
+
     loss_fn = nn.CrossEntropyLoss()
     initial_loss = loss_fn(logits.view(-1, vocab_size), y.view(-1)).item()
     expected_initial_loss = math.log(vocab_size)
     print(f"Initial loss is {initial_loss:.4}, expected {expected_initial_loss:.4}")
+
+    print("\n\n")
+    print("Causality test")
+    model.eval()
+
+    x, _ = get_batch(train, 4, 128)
+    x = x.to(device)
+    x2 = x.clone().to(device)
+    x2[:, 60] = (x2[:, 60] + 1) % 65  # change one character
+    with torch.no_grad():
+        a, b = model(x), model(x2)
+    print(torch.equal(a[:, :60], b[:, :60]))  # should be True: past ignores future
+    print(torch.equal(a[:, 60:], b[:, 60:]))  # should be False
+
+    model.train()
+    print("\n\n")
 
     def estimate_loss(data):
         num_batches = 20
@@ -144,7 +195,7 @@ def main():
             for idx in range(n):
                 assert ids.shape == (1, idx + 1)
 
-                logits = model(ids)
+                logits = model(ids[:, -block_size:])
                 assert logits.shape == (1, idx + 1, vocab_size)
 
                 last_token_logits = logits[:, -1, :]
