@@ -84,10 +84,10 @@ class Head(nn.Module):
 
 
 class MultiHead(nn.Module):
-    def __init__(self, C: int, n_head: int):
+    def __init__(self, C: int, num_heads: int):
         super().__init__()
-        head_size = C // n_head
-        self.heads = nn.ModuleList([Head(C, head_size) for _ in range(n_head)])
+        head_size = C // num_heads
+        self.heads = nn.ModuleList([Head(C, head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(C, C)
 
     def forward(self, x):  # (B, T, C)
@@ -97,10 +97,10 @@ class MultiHead(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, C: int):
+    def __init__(self, C: int, num_heads: int):
         super().__init__()
         self.ln1 = nn.LayerNorm(C)
-        self.attn = MultiHead(C, n_head=4)
+        self.attn = MultiHead(C, num_heads=num_heads)
         self.ln2 = nn.LayerNorm(C)
         self.mlp = MLP(C)
 
@@ -112,11 +112,11 @@ class Block(nn.Module):
 
 class Transformer(nn.Module):
     # V: vocab size, C: embedding dim
-    def __init__(self, V: int, C: int, block_size: int, n_layers: int):
+    def __init__(self, V: int, C: int, block_size: int, n_layers: int, num_heads: int):
         super().__init__()
         self.tok_emb = nn.Embedding(V, C)
         self.pos_emb = nn.Embedding(block_size, C)
-        self.blocks = nn.Sequential(*[Block(C) for _ in range(n_layers)])
+        self.blocks = nn.Sequential(*[Block(C, num_heads) for _ in range(n_layers)])
         self.ln_f = nn.LayerNorm(C)
         self.head = nn.Linear(C, V)
 
@@ -133,10 +133,12 @@ class Transformer(nn.Module):
 def main():
     torch.manual_seed(0)
     block_size = 128
-    embed_dim = 64
+    # C is the embed dim
+    C = 128
     num_steps = 5000
     B, T = 64, 128
     num_layers = 4
+    num_heads = 4
 
     device = get_device()
 
@@ -178,8 +180,8 @@ def main():
 
     print("\n\n\n")
 
-    # model = MyModel(vocab_size, embed_dim, hidden_dim).to(device)
-    model = Transformer(vocab_size, embed_dim, block_size, num_layers).to(device)
+    # model = MyModel(vocab_size, C, hidden_dim).to(device)
+    model = Transformer(vocab_size, C, block_size, num_layers, num_heads).to(device)
 
     logits = model(x)
     print(logits.shape)
@@ -209,8 +211,7 @@ def main():
     model.train()
     print("\n\n")
 
-    def estimate_loss(data):
-        num_batches = 20
+    def estimate_loss(data, num_batches: int):
         model.eval()
 
         with torch.no_grad():
@@ -258,9 +259,17 @@ def main():
 
     print(f"Initial generation is {generate(100, 1.0)}")
 
+    def lr_at(step, max_lr=1e-3, warmup=100, min_lr=1e-4):
+        if step < warmup:
+            return max_lr * (step + 1) / warmup
+        progress = (step - warmup) / (num_steps - warmup)
+        return min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * progress))
+
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     for step in range(num_steps):
+        for g in opt.param_groups:
+            g["lr"] = lr_at(step)
         x, y = get_batch(train, B, T)
         x, y = x.to(device), y.to(device)
 
@@ -274,8 +283,11 @@ def main():
         opt.step()
 
         if step % 250 == 0 or step == num_steps - 1:
-            train_loss = estimate_loss(train)
-            val_loss = estimate_loss(val)
+            num_batches = 20
+            if step == num_steps - 1:
+                num_batches = 200
+            train_loss = estimate_loss(train, num_batches)
+            val_loss = estimate_loss(val, num_batches)
             print(f"Step {step}, train loss {train_loss:.4}, val loss {val_loss:.4}")
             print(f"Sample text:{generate(100, 1.0)}")
             print("")
