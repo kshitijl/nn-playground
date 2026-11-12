@@ -140,13 +140,13 @@ class Transformer(nn.Module):
 
 def main():
     torch.manual_seed(0)
-    block_size = 128
+    block_size = 256
     # C is the embed dim
-    C = 128
+    C = 384
     num_steps = 5000
-    B, T = 64, 128
-    num_layers = 4
-    num_heads = 4
+    B, T = 32, 256
+    num_layers = 6
+    num_heads = 6
 
     device = get_device()
 
