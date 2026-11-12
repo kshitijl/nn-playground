@@ -8,19 +8,14 @@ q, k, v = torch.randn(B, T, C), torch.randn(B, T, C), torch.randn(B, T, C)
 
 
 def attention(q, k, v):
-    assert q.shape == (B, T, C)
-    assert k.shape == (B, T, C)
-    assert v.shape == (B, T, C)
+    T, d = q.shape[-2], q.shape[-1]
+    scores = q @ k.transpose(-2, -1) / math.sqrt(d)
 
-    scores = q @ k.transpose(-2, -1) / math.sqrt(C)
-    assert scores.shape == (B, T, T)
-
-    future = torch.ones((T, T), dtype=torch.bool).triu(diagonal=1)
+    future = torch.ones((T, T), dtype=torch.bool, device=q.device).triu(diagonal=1)
     scores = scores.masked_fill(future, float("-inf"))
     weights = torch.softmax(scores, dim=-1)
 
     answer = weights @ v
-    assert answer.shape == (B, T, C)
     return answer, weights
 
 
