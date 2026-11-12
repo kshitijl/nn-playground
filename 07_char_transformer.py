@@ -140,11 +140,10 @@ class Transformer(nn.Module):
 
 def main():
     torch.manual_seed(0)
-    block_size = 256
     # C is the embed dim
     C = 384
     num_steps = 5000
-    B, T = 32, 256
+    T = 256
     num_layers = 6
     num_heads = 6
 
@@ -180,7 +179,7 @@ def main():
 
     print("Building batches")
 
-    x, y = get_batch(train, B, T)
+    x, y = get_batch(train, 32, T)
     x, y = x.to(device), y.to(device)
     print(decode(x[0].tolist()))
     print(decode(y[0].tolist()))
@@ -189,7 +188,7 @@ def main():
     print("\n\n\n")
 
     # model = MyModel(vocab_size, C, hidden_dim).to(device)
-    model = Transformer(vocab_size, C, block_size, num_layers, num_heads).to(device)
+    model = Transformer(vocab_size, C, T, num_layers, num_heads).to(device)
 
     logits = model(x)
     print(logits.shape)
@@ -219,6 +218,9 @@ def main():
     model.train()
     print("\n\n")
 
+    micro_B = 32
+    accum_steps = 2
+
     def estimate_loss(data, num_batches: int):
         model.eval()
 
@@ -226,7 +228,7 @@ def main():
             total_loss = 0
 
             for idx in range(num_batches):
-                x, y = get_batch(data, B, T)
+                x, y = get_batch(data, micro_B, T)
                 x, y = x.to(device), y.to(device)
                 logits = model(x)
                 loss = loss_fn(logits.view(-1, vocab_size), y.view(-1))
@@ -246,7 +248,7 @@ def main():
             for idx in range(n):
                 assert ids.shape == (1, idx + 1)
 
-                logits = model(ids[:, -block_size:])
+                logits = model(ids[:, -T:])
                 assert logits.shape == (1, idx + 1, vocab_size)
 
                 last_token_logits = logits[:, -1, :]
@@ -278,14 +280,16 @@ def main():
     for step in range(num_steps):
         for g in opt.param_groups:
             g["lr"] = lr_at(step)
-        x, y = get_batch(train, B, T)
-        x, y = x.to(device), y.to(device)
-
-        logits = model(x)
-        loss = loss_fn(logits.view(-1, vocab_size), y.view(-1))
-
         opt.zero_grad()
-        loss.backward()
+        for _ in range(accum_steps):
+            x, y = get_batch(train, micro_B, T)
+            x, y = x.to(device), y.to(device)
+
+            logits = model(x)
+            loss = loss_fn(logits.view(-1, vocab_size), y.view(-1)) / accum_steps
+
+            loss.backward()
+
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
         opt.step()
@@ -300,7 +304,7 @@ def main():
             print(f"Sample text:{generate(100, 1.0)}")
             print("")
 
-    torch.save(model.state_dict(), "char_lstm.pt")
+    torch.save(model.state_dict(), "char_transformer.pt")
 
 
 if __name__ == "__main__":
