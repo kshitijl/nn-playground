@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 import math
 
 
@@ -57,6 +58,16 @@ def attention(q, k, v):
     return answer, weights
 
 
+class MLP(nn.Module):
+    def __init__(self, C: int):
+        super().__init__()
+        self.fc1 = nn.Linear(C, 4 * C)
+        self.fc2 = nn.Linear(4 * C, C)
+
+    def forward(self, x):
+        return self.fc2(F.gelu(self.fc1(x)))
+
+
 class Head(nn.Module):
     def __init__(self, C: int):
         super().__init__()
@@ -79,6 +90,7 @@ class Bigram(nn.Module):
         self.tok_emb = nn.Embedding(V, C)
         self.pos_emb = nn.Embedding(block_size, C)
         self.attn = Head(C)
+        self.mlp = MLP(C)
         self.head = nn.Linear(C, V)
 
     def forward(self, x):  # (B, T)
@@ -86,6 +98,7 @@ class Bigram(nn.Module):
         pos = torch.arange(T, device=x.device)
         h = self.tok_emb(x) + self.pos_emb(pos)  # (B, T, C) + (T, C)
         h = self.attn(h)  # (B, T, C)
+        h = self.mlp(h)
         return self.head(h)  # (B, T, V)
 
 
