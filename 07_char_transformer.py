@@ -83,22 +83,37 @@ class Head(nn.Module):
         return attention(q, k, v)[0]
 
 
-class Bigram(nn.Module):
+class Block(nn.Module):
+    def __init__(self, C: int):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(C)
+        self.attn = Head(C)
+        self.ln2 = nn.LayerNorm(C)
+        self.mlp = MLP(C)
+
+    def forward(self, x):
+        x = x + self.attn(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
+        return x
+
+
+class Transformer(nn.Module):
     # V: vocab size, C: embedding dim
-    def __init__(self, V: int, C: int, block_size: int):
+    def __init__(self, V: int, C: int, block_size: int, n_layers: int):
         super().__init__()
         self.tok_emb = nn.Embedding(V, C)
         self.pos_emb = nn.Embedding(block_size, C)
-        self.attn = Head(C)
-        self.mlp = MLP(C)
+        self.blocks = nn.Sequential(*[Block(C) for _ in range(n_layers)])
+        self.ln_f = nn.LayerNorm(C)
         self.head = nn.Linear(C, V)
 
     def forward(self, x):  # (B, T)
         T = x.shape[1]
         pos = torch.arange(T, device=x.device)
         h = self.tok_emb(x) + self.pos_emb(pos)  # (B, T, C) + (T, C)
-        h = self.attn(h)  # (B, T, C)
-        h = self.mlp(h)
+
+        h = self.blocks(h)
+        h = self.ln_f(h)
         return self.head(h)  # (B, T, V)
 
 
@@ -108,6 +123,7 @@ def main():
     embed_dim = 64
     num_steps = 5000
     B, T = 64, 128
+    num_layers = 4
 
     device = get_device()
 
@@ -150,7 +166,7 @@ def main():
     print("\n\n\n")
 
     # model = MyModel(vocab_size, embed_dim, hidden_dim).to(device)
-    model = Bigram(vocab_size, embed_dim, block_size).to(device)
+    model = Transformer(vocab_size, embed_dim, block_size, num_layers).to(device)
 
     logits = model(x)
     print(logits.shape)
